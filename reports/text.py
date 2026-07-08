@@ -1,5 +1,6 @@
 """Plain-text report generator."""
 
+from collections import defaultdict
 from typing import Any
 
 from core.context import Context
@@ -63,33 +64,7 @@ def generate_text_report(context: Context) -> str:
         lines.append("")
 
     # Technologies
-    if context.technologies:
-        lines.append("── Technologies ──")
-        if all(isinstance(t, dict) for t in context.technologies):
-            for entry in context.technologies:
-                source = entry.get("source", "?")
-                server = entry.get("server") or "N/A"
-                cms = ", ".join(entry.get("cms", []))
-                frameworks = ", ".join(entry.get("frameworks", []))
-                libraries = ", ".join(entry.get("libraries", []))
-                analytics = ", ".join(entry.get("analytics", []))
-                cdn = ", ".join(entry.get("cdn", []))
-                parts = [f"Server: {server}"]
-                if cms:
-                    parts.append(f"CMS: {cms}")
-                if frameworks:
-                    parts.append(f"Frameworks: {frameworks}")
-                if libraries:
-                    parts.append(f"Libraries: {libraries}")
-                if analytics:
-                    parts.append(f"Analytics: {analytics}")
-                if cdn:
-                    parts.append(f"CDN: {cdn}")
-                lines.append(f"  [{source}] {' | '.join(parts)}")
-        else:
-            for tech in context.technologies:
-                lines.append(f"  {tech}")
-        lines.append("")
+    lines.extend(_render_technologies(context))
 
     if not any([context.whois, context.dns, context.subdomains,
                 context.open_ports, context.banners, context.technologies]):
@@ -97,3 +72,83 @@ def generate_text_report(context: Context) -> str:
 
     lines.append("=" * 60)
     return "\n".join(lines)
+
+
+def _render_technologies(context: Context) -> list[str]:
+    """Render the Technologies, Detection Sources, and Summary sections."""
+    lines: list[str] = []
+    if not context.technologies:
+        return lines
+
+    # ── Aggregate across all sources ──────────────────────────────
+    categories = ["server", "cms", "frameworks", "libraries", "analytics", "cdn"]
+    source_names = {"whatweb": "WhatWeb", "wappalyzer": "Wappalyzer", "fallback": "HTTP Fallback"}
+
+    values: dict[str, set[str]] = {c: set() for c in categories}
+    value_sources: dict[str, dict[str, set[str]]] = {c: defaultdict(set) for c in categories}
+    active_sources: set[str] = set()
+
+    for entry in context.technologies:
+        if not isinstance(entry, dict):
+            continue
+        src_raw = entry.get("source", "")
+        src = source_names.get(src_raw, src_raw.capitalize())
+        active_sources.add(src)
+
+        for cat in categories:
+            raw = entry.get(cat)
+            if not raw:
+                continue
+            items = raw if isinstance(raw, list) else [raw]
+            for item in items:
+                text = str(item).strip()
+                if text:
+                    values[cat].add(text)
+                    value_sources[cat][text].add(src)
+
+    # ── Technologies section ──────────────────────────────────────
+    lines.append("── Technologies ──")
+
+    category_labels = {
+        "server": "Server",
+        "cms": "CMS",
+        "frameworks": "Frameworks",
+        "libraries": "Libraries",
+        "analytics": "Analytics",
+        "cdn": "CDN",
+    }
+
+    for cat in categories:
+        label = category_labels[cat]
+        if values[cat]:
+            for val in sorted(values[cat]):
+                srcs = sorted(value_sources[cat][val])
+                lines.append(f"  {label:15} {val}")
+                lines.append(f"  {'':15} Sources: {', '.join(srcs)}")
+        else:
+            lines.append(f"  {label:15} Not detected")
+
+    # ── Detection Sources section ─────────────────────────────────
+    lines.append("")
+    lines.append("── Detection Sources ──")
+
+    # Known sources in priority order
+    all_known = ["WhatWeb", "Wappalyzer", "HTTP Fallback"]
+    for name in all_known:
+        if name in active_sources:
+            lines.append(f"  \u2713 {name}")
+        else:
+            lines.append(f"  \u2717 {name}")
+
+    # ── Summary section ───────────────────────────────────────────
+    lines.append("")
+    lines.append("── Summary ──")
+
+    total_detections = sum(len(v) for v in values.values())
+    detected_categories = [category_labels[c] for c in categories if values[c]]
+    lines.append(f"  Technologies found:       {total_detections}")
+    lines.append(f"  Categories with data:     {', '.join(detected_categories) if detected_categories else 'None'}")
+    lines.append(f"  Active detection sources: {len(active_sources)}/{len(all_known)} ({', '.join(sorted(active_sources))})")
+
+    lines.append("")
+    return lines
