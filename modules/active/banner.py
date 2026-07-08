@@ -70,39 +70,50 @@ class BannerGrabModule(BaseReconModule):
         probe = self._get_probe(port)
         method = self._get_method(port)
 
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(self.TIMEOUT)
-            sock.connect((host, port))
+        # Try plain socket first, then fall back to TLS if response is empty
+        for use_tls in (False, True):
+            if use_tls and result.get("banner"):
+                break
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(self.TIMEOUT)
+                sock.connect((host, port))
 
-            if port in {443, 8443}:
-                try:
-                    context_ssl = ssl.create_default_context()
-                    sock = context_ssl.wrap_socket(sock, server_hostname=host)
-                except ssl.SSLError as exc:
-                    result["error"] = f"SSL wrap failed: {exc}"
-                    sock.close()
-                    return result
+                if port in {443, 8443} or use_tls:
+                    try:
+                        ctx = ssl.create_default_context()
+                        sock = ctx.wrap_socket(sock, server_hostname=host)
+                    except ssl.SSLError as exc:
+                        if use_tls:
+                            result["error"] = f"TLS failed: {exc}"
+                        sock.close()
+                        continue
 
-            if probe:
-                sock.sendall(probe)
+                if probe:
+                    sock.sendall(probe)
 
-            response = sock.recv(self.RECV_SIZE)
-            sock.close()
+                response = sock.recv(self.RECV_SIZE)
+                sock.close()
 
-            decoded = response.decode("utf-8", errors="replace").strip()
-            if decoded:
-                result["banner"] = decoded
-                result["method"] = method
-            else:
-                result["error"] = "Empty response"
+                decoded = response.decode("utf-8", errors="replace").strip()
+                if decoded:
+                    result["banner"] = decoded
+                    result["method"] = method + (" (TLS)" if use_tls else "")
+                    result["error"] = None
+                elif not use_tls:
+                    continue  # Try TLS
+                else:
+                    result["error"] = "Empty response"
 
-        except socket.timeout:
-            result["error"] = "Timeout"
-        except ConnectionRefusedError:
-            result["error"] = "Connection refused"
-        except OSError as exc:
-            result["error"] = str(exc)
+            except socket.timeout:
+                if use_tls:
+                    result["error"] = result.get("error") or "Timeout"
+            except ConnectionRefusedError:
+                result["error"] = "Connection refused"
+                break
+            except OSError as exc:
+                if use_tls:
+                    result["error"] = str(exc)
 
         return result
 
