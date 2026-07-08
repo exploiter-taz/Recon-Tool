@@ -107,7 +107,8 @@ def _render_technologies(context: Context) -> list[str]:
                     value_sources[cat][text].add(src)
 
     # ── Technologies section ──────────────────────────────────────
-    lines.append("── Technologies ──")
+    lines.append("Technology Fingerprint")
+    lines.append("=" * 49)
 
     category_labels = {
         "server": "Server",
@@ -120,35 +121,35 @@ def _render_technologies(context: Context) -> list[str]:
 
     for cat in categories:
         label = category_labels[cat]
+        lines.append("")
+        lines.append(f"  {label}")
         if values[cat]:
             for val in sorted(values[cat]):
-                srcs = sorted(value_sources[cat][val])
-                lines.append(f"  {label:15} {val}")
-                lines.append(f"  {'':15} Sources: {', '.join(srcs)}")
+                lines.append(f"    \u2022 {val}")
         else:
-            lines.append(f"  {label:15} Not detected")
+            lines.append(f"    Not detected")
 
     # ── Detection Sources section ─────────────────────────────────
     lines.append("")
-    lines.append("── Detection Sources ──")
-
-    # Known sources in priority order
+    lines.append("  Detection Sources")
+    lines.append("  " + "-" * 30)
     all_known = ["WhatWeb", "Wappalyzer", "HTTP Fallback"]
     for name in all_known:
         if name in active_sources:
-            lines.append(f"  \u2713 {name}")
+            lines.append(f"    \u2713 {name}")
         else:
-            lines.append(f"  \u2717 {name}")
+            lines.append(f"    \u2717 {name}")
 
     # ── Summary section ───────────────────────────────────────────
     lines.append("")
-    lines.append("── Summary ──")
+    lines.append("  Summary")
+    lines.append("  " + "-" * 30)
 
     total_detections = sum(len(v) for v in values.values())
     detected_categories = [category_labels[c] for c in categories if values[c]]
-    lines.append(f"  Technologies found:       {total_detections}")
-    lines.append(f"  Categories with data:     {', '.join(detected_categories) if detected_categories else 'None'}")
-    lines.append(f"  Active detection sources: {len(active_sources)}/{len(all_known)} ({', '.join(sorted(active_sources))})")
+    lines.append(f"    Technologies found:       {total_detections}")
+    lines.append(f"    Categories with data:     {', '.join(detected_categories) if detected_categories else 'None'}")
+    lines.append(f"    Active detection sources: {len(active_sources)}/{len(all_known)} ({', '.join(sorted(active_sources))})")
 
     lines.append("")
     return lines
