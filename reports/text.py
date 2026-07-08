@@ -69,8 +69,23 @@ def generate_text_report(context: Context) -> str:
             for entry in context.technologies:
                 source = entry.get("source", "?")
                 server = entry.get("server") or "N/A"
-                cms = ", ".join(entry.get("cms", [])) or "N/A"
-                lines.append(f"  [{source}] Server: {server}  CMS: {cms}")
+                cms = ", ".join(entry.get("cms", []))
+                frameworks = ", ".join(entry.get("frameworks", []))
+                libraries = ", ".join(entry.get("libraries", []))
+                analytics = ", ".join(entry.get("analytics", []))
+                cdn = ", ".join(entry.get("cdn", []))
+                parts = [f"Server: {server}"]
+                if cms:
+                    parts.append(f"CMS: {cms}")
+                if frameworks:
+                    parts.append(f"Frameworks: {frameworks}")
+                if libraries:
+                    parts.append(f"Libraries: {libraries}")
+                if analytics:
+                    parts.append(f"Analytics: {analytics}")
+                if cdn:
+                    parts.append(f"CDN: {cdn}")
+                lines.append(f"  [{source}] {' | '.join(parts)}")
         else:
             for tech in context.technologies:
                 lines.append(f"  {tech}")
