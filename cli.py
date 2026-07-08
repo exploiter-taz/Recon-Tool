@@ -54,4 +54,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Output format (default: text).",
     )
 
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Bypass cache and force a fresh scan.",
+    )
+
     return parser.parse_args(argv)
