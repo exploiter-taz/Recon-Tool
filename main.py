@@ -1,11 +1,8 @@
 """Entry point for the Recon Tool."""
 
 import argparse
-import json
 import logging
 import sys
-from dataclasses import asdict
-from pathlib import Path
 from urllib.parse import urlparse
 
 from cli import parse_args
@@ -14,8 +11,6 @@ from core.engine import Engine
 from core.logger import setup_logger
 
 logger = logging.getLogger(__name__)
-
-CACHE_DIR = Path("cache")
 
 
 def _build_module_list(args: argparse.Namespace) -> list:
@@ -75,37 +70,6 @@ def _generate_report(context: Context, output_format: str) -> None:
         print(report)
 
 
-def _cache_path(target: str) -> Path:
-    """Return the filesystem path for the cache file of *target*."""
-    safe = target.replace(".", "_").replace(":", "_")
-    return CACHE_DIR / f"{safe}.json"
-
-
-def _load_cache(target: str) -> Context | None:
-    """Load a previously cached scan result for *target*, or return None."""
-    path = _cache_path(target)
-    if not path.exists():
-        return None
-    try:
-        data = json.loads(path.read_text())
-        logger.info("Loaded cached results for %s", target)
-        return Context(**data)
-    except (json.JSONDecodeError, TypeError, KeyError) as exc:
-        logger.warning("Cache corrupt for %s — %s", target, exc)
-        return None
-
-
-def _save_cache(context: Context) -> None:
-    """Persist *context* to disk so future scans can skip re-execution."""
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    path = _cache_path(context.target)
-    data = asdict(context)
-    # Convert non-serializable values to strings
-    raw = json.dumps(data, indent=2, default=str)
-    path.write_text(raw)
-    logger.info("Scan results cached for %s", context.target)
-
-
 def _clean_target(raw: str) -> str:
     """Extract the hostname from a URL or return the raw string as-is."""
     parsed = urlparse(raw)
@@ -132,14 +96,6 @@ def main() -> None:
         sys.exit(1)
 
     target = _clean_target(args.target)
-
-    # Load cache or run fresh scan
-    context = _load_cache(target) if not args.fresh else None
-
-    if context is not None:
-        _generate_report(context, args.output)
-        return
-
     context = Context(target=target)
     modules = _build_module_list(args)
 
@@ -150,7 +106,6 @@ def main() -> None:
     engine = Engine(modules)
     context = engine.run(context)
 
-    _save_cache(context)
     _generate_report(context, args.output)
 
 
