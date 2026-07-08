@@ -3,6 +3,7 @@
 import logging
 import socket
 import ssl
+from typing import Any
 
 from core.context import Context
 from modules.base import BaseReconModule
@@ -56,7 +57,7 @@ class BannerGrabModule(BaseReconModule):
         context.banners = banners
         logger.info("BannerGrabModule: grabbed %d banners", len(banners))
 
-    def _grab_banner(self, host, port):
+    def _grab_banner(self, host: str, port: int) -> dict[str, Any]:
         """Return a structured banner dict for a single port."""
         result = {
             "port": port,
@@ -105,7 +106,7 @@ class BannerGrabModule(BaseReconModule):
 
         return result
 
-    def _get_probe(self, port):
+    def _get_probe(self, port: int) -> bytes | None:
         """Return probe bytes, or None if server sends banner first."""
         probes = {
             21: None,
@@ -126,7 +127,7 @@ class BannerGrabModule(BaseReconModule):
         }
         return probes.get(port, b"\r\n")
 
-    def _get_method(self, port):
+    def _get_method(self, port: int) -> str:
         """Human-readable method name."""
         methods = {
             21: "passive",

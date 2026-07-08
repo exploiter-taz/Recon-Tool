@@ -6,4 +6,6 @@ venv/
 .vscode/
 .idea/
 output/
-logs/
+logs/scratch/
+
+scratch/

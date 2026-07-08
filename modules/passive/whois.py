@@ -49,7 +49,7 @@ class WhoisModule(BaseReconModule):
 
         try:
             raw = whois.whois(context.target)
-        except whois.parser.WhoisDomainNotFoundError:
+        except whois.parser.PywhoisError:
             logger.warning("WHOIS query failed for %s — domain may not exist", context.target)
             context.whois = None
             return

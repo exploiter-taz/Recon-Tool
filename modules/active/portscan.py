@@ -29,28 +29,14 @@ class PortScanModule(BaseReconModule):
         if not context.target:
             logger.warning("PortScanModule: no target in context")
             return False
-
-        # If target is a domain, make sure we can resolve it (or that DNS
-        # module already did).  We do a quick resolution here as a
-        # fallback so the module is self-contained.
-        try:
-            socket.inet_aton(context.target)
-        except OSError:
-            # Not an IP — try to resolve
-            try:
-                resolved = socket.gethostbyname(context.target)
-                # Store resolved IP in context.data so other modules can reuse it
-                context.data["resolved_ip"] = resolved
-                logger.info("PortScanModule: resolved %s -> %s", context.target, resolved)
-            except socket.gaierror as exc:
-                logger.error("PortScanModule: cannot resolve %s — %s", context.target, exc)
-                return False
-
         return True
 
     def run(self, context: Context) -> None:
-        """Execute Nmap port scan and write results to context."""
-        target_ip = context.data.get("resolved_ip", context.target)
+        """Resolve target, execute Nmap port scan, and write results to context."""
+        target_ip = self._resolve_target(context)
+        if target_ip is None:
+            context.open_ports = []
+            return
         logger.info("PortScanModule: scanning %s", target_ip)
 
         try:
@@ -84,3 +70,26 @@ class PortScanModule(BaseReconModule):
         context.open_ports = open_ports
 
         logger.info("PortScanModule: found %d open ports — %s", len(open_ports), open_ports)
+
+    @staticmethod
+    def _resolve_target(context: Context) -> str | None:
+        """Resolve target domain to an IP address if needed.
+
+        Returns the IP address, or the original target if it is already
+        an IP.  Returns ``None`` if resolution fails.
+        """
+        target = context.target
+        try:
+            socket.inet_aton(target)
+            return target
+        except OSError:
+            pass
+
+        try:
+            resolved = socket.gethostbyname(target)
+            context.data["resolved_ip"] = resolved
+            logger.info("PortScanModule: resolved %s -> %s", target, resolved)
+            return resolved
+        except socket.gaierror as exc:
+            logger.error("PortScanModule: cannot resolve %s — %s", target, exc)
+            return None
