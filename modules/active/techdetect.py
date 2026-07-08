@@ -214,6 +214,9 @@ class TechDetectModule(BaseReconModule):
         except ImportError:
             logger.info("python-Wappalyzer not installed, skipping")
             return None
+        except Exception:
+            logger.exception("python-Wappalyzer import failed unexpectedly")
+            return None
 
         try:
             wappalyzer = Wappalyzer.latest()
