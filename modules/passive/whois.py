@@ -71,15 +71,21 @@ class WhoisModule(BaseReconModule):
 
     @staticmethod
     def _normalise(value: Any) -> Any:
-        """Flatten single-element lists and stringify dates."""
+        """Flatten single-element lists and stringify dates.
+
+        Entries that differ only by URL formatting or minor whitespace
+        are treated as duplicates and collapsed.
+        """
         if isinstance(value, list):
-            # Deduplicate while preserving order.
             seen: set[str] = set()
             unique: list[str] = []
             for item in value:
                 text = str(item)
-                if text not in seen:
-                    seen.add(text)
+                # Strip URLs and parenthetical suffixes before comparison
+                key = text.split("https://")[0].split("http://")[0].strip()
+                key = key.rstrip("(").strip()
+                if key not in seen:
+                    seen.add(key)
                     unique.append(text)
             return unique if len(unique) != 1 else unique[0]
         if hasattr(value, "isoformat"):

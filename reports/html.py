@@ -21,10 +21,17 @@ def generate_html_report(context: Context) -> str:
     def _section(title: str, body: str) -> str:
         return f"<h2>{title}</h2>\n{body}"
 
+    def _fmt(val: Any) -> str:
+        """Format a value for HTML display — lists become inner lists."""
+        if isinstance(val, list):
+            items = "".join(f"<li>{html_mod.escape(str(v))}</li>" for v in val)
+            return f"<ul style='margin:0;padding-left:1.2rem'>{items}</ul>"
+        return html_mod.escape(str(val))
+
     # WHOIS
     if context.whois:
         rows = "".join(
-            f"<tr><td>{html_mod.escape(str(k))}</td><td>{html_mod.escape(str(v))}</td></tr>"
+            f"<tr><td>{html_mod.escape(str(k))}</td><td>{_fmt(v)}</td></tr>"
             for k, v in context.whois.items()
         )
         sections.append(_section("WHOIS", f"<table>{rows}</table>"))
