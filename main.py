@@ -55,7 +55,7 @@ def _build_module_list(args: argparse.Namespace) -> list:
 def _generate_report(context: Context, output_format: str) -> None:
     """Print or save results based on the chosen output format."""
     if output_format == "text":
-        from reports.text import generate as generate_text_report
+        from reports.text import generate_text_report
 
         report = generate_text_report(context)
     elif output_format == "html":
