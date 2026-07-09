@@ -6,15 +6,30 @@
 
 ## What
 
-**Recon-Tool** is an automated information-gathering tool that collects intelligence about a target domain through three phases:
+**Recon-Tool** is an automated information-gathering tool. You give it a domain name (like `example.com`), and it finds out as much as it can about that domain — who owns it, what servers it runs, what ports are open, what technologies are behind it, and more.
 
-| Phase | Description | Modules |
+It is designed for **security researchers, penetration testers, and system administrators** who need to understand a target's digital footprint before performing deeper analysis.
+
+### What kind of information does it collect?
+
+| Category | What you learn | Example |
 |---|---|---|
-| **Passive Reconnaissance** | Collects data without touching the target infrastructure | WHOIS, DNS, Subdomains |
-| **Active Reconnaissance** | Connects directly to the target to enumerate services | Port Scan, Banner Grab |
-| **Technology Fingerprinting** | Identifies software, frameworks, and analytics | Tech Detect (3 layers) |
+| **WHOIS** | Who registered the domain, when, contact info | Google LLC, MarkMonitor, 1997-09-15 |
+| **DNS** | IP addresses, mail servers, name servers, TXT records | 142.250.181.142, ns1.google.com |
+| **Subdomains** | Other domains under the same root | mail.google.com, docs.google.com |
+| **Open Ports** | What doors (ports) are open on the server | Port 80 (HTTP), Port 22 (SSH) |
+| **Banners** | What software is running on each open port | nginx/1.24.0 (Ubuntu) |
+| **Technologies** | What tech stack the website uses | Cloudflare, React, Google Analytics |
 
-Each phase enriches a shared `Context` object. When all phases complete, the `Context` is rendered into a report.
+### Three phases of reconnaissance
+
+The tool operates in three ordered phases. Each phase depends on data from the previous one:
+
+| Phase | What it does | Modules | Touches the target? |
+|---|---|---|---|
+| **1. Passive Recon** | Gathers info from public databases | WHOIS, DNS, Subdomains | ❌ No — uses APIs only |
+| **2. Active Recon** | Connects directly to the target | Port Scan, Banner Grab | ✅ Yes — makes network connections |
+| **3. Fingerprinting** | Analyses collected data to identify software | Tech Detect | ✅ Yes — sends HTTP requests |
 
 ---
 
@@ -42,41 +57,148 @@ Recon-Tool solves these by:
 
 ## How
 
-### Data Flow
+### Step by step: What happens when you type the command?
+
+Imagine you run:
+
+```bash
+python main.py example.com --whois --dns --ports --output text
+```
+
+Here is exactly what happens, from the moment you press Enter to the moment you see the results:
+
+---
+
+#### Step 1 — `main.py` wakes up
+
+The file `main.py` is the entry point. It does four things immediately:
+
+1. **Calls `setup_logger()`** — configures logging so every component writes to the same place (terminal + file).
+2. **Calls `parse_args()`** — reads your command-line arguments (`target = example.com`, `--whois`, `--dns`, `--ports`, `--output text`).
+3. **Cleans the target** — if you passed `http://example.com/path`, it strips the protocol and path and keeps just `example.com`.
+4. **Creates the `Context`** — an object that starts with only `target = "example.com"` and every other field set to `None` (empty).
+
+---
+
+#### Step 2 — Modules are selected
+
+Based on your flags, `main.py` builds a list of modules:
+
+- `--whois`  →  `WhoisModule` (passive)
+- `--dns`    →  `DnsModule` (passive)
+- `--ports`  →  `PortScanModule` (active)
+
+Order matters. Passive modules come first, then active ones. Some modules **depend** on others — for example, `BannerGrabModule` needs `open_ports` from `PortScanModule`, so it must run after it.
+
+---
+
+#### Step 3 — The Engine takes over
+
+```python
+engine = Engine([WhoisModule(), DnsModule(), PortScanModule()])
+engine.run(context)
+```
+
+The `Engine` is the orchestrator. It does not know what each module does. It only knows that every module has two methods: `validate()` and `run()`.
+
+For each module in the list, the engine:
+
+1. **Calls `module.validate(context)`**
+   - The module inspects the `Context`.
+   - If something critical is missing, it returns `False` and the module is skipped.
+   - *Example:* `BannerGrabModule.validate()` checks: is `context.open_ports` set? If not, skip.
+   - **Important:** `validate()` is read-only — it never modifies the `Context`.
+
+2. **Calls `module.run(context)`**
+   - The module does its actual work.
+   - It reads what it needs from the `Context` and **writes its results back**.
+   - *Example:* `WhoisModule` reads `context.target`, queries the WHOIS server, and sets `context.whois = { ... }`.
+   - `run()` never returns a value. All output goes directly into the `Context`.
+
+3. **If something goes wrong**
+   - The module catches its own errors (timeout, connection refused, rate limit).
+   - If it cannot handle the error, it lets it propagate. The engine catches it, logs the error, and **moves to the next module**.
+   - One failing module never stops the entire scan.
+
+---
+
+#### Step 4 — The Context grows
+
+After each module runs, the `Context` has more data:
 
 ```
-CLI Input
-  │
-  ├── main.py
-  │     ├── parse_args()        ← reads CLI flags
-  │     ├── Context(target)     ← creates the shared state object
-  │     └── Engine(modules)     ← injects the selected module list
-  │
-  ├── Engine.run(context)
-  │     │
-  │     │   for each module:
-  │     │     ├── validate(context) → bool
-  │     │     │     Side-effect-free check. Returns False to skip.
-  │     │     │
-  │     │     └── run(context) → None
-  │     │           Mutates context in-place with results.
-  │     │           Never returns a value.
-  │     │
-  │     └── return context       ← enriched with all findings
-  │
-  ├── Context
-  │     ├── target: str
-  │     ├── whois: dict          ← populated by WhoisModule
-  │     ├── dns: dict            ← populated by DnsModule
-  │     ├── subdomains: list     ← populated by SubdomainsModule
-  │     ├── open_ports: list     ← populated by PortScanModule
-  │     ├── banners: list        ← populated by BannerGrabModule
-  │     ├── technologies: list   ← populated by TechDetectModule
-  │     └── data: dict           ← free-form extension
-  │
-  └── reports/*.py
-        └── generate(context)
-              Reads Context, renders text or HTML.
+After WhoisModule:     context.target = "example.com"
+                       context.whois  = { registrar, dates, name_servers, ... }
+
+After DnsModule:       context.dns    = { A: [...], MX: [...], NS: [...], ... }
+                       context.whois  = (still there from before)
+
+After PortScanModule:  context.open_ports = [22, 80, 443]
+                       context.dns    = (still there)
+                       context.whois  = (still there)
+                       context.banners = (still None — we did not ask for banners)
+```
+
+Think of the `Context` as a **backpack** that starts empty. Each module opens the backpack, takes what it needs, and puts its findings inside. The next module sees everything the previous modules put in.
+
+---
+
+#### Step 5 — The Report is generated
+
+Once all modules finish, the enriched `Context` is sent to a report generator:
+
+```python
+report = generate_text_report(context)
+print(report)
+```
+
+The report generator reads the final state of the `Context` and formats it as:
+
+- **Text** — a clean, readable terminal report.
+- **HTML** — a styled, dark-mode page with cards, color-coded tags, and a summary.
+
+The report generator never runs scans or touches the network. It only reads what is already in the `Context`.
+
+---
+
+### Visual summary of the pipeline
+
+```
+You type:  python main.py example.com --whois --dns --ports
+                │
+                ▼
+          main.py
+                │
+                ├── parse_args()        →  reads --whois --dns --ports
+                ├── Context(target)     →  creates an empty backpack
+                │
+                ▼
+          Engine.run(backpack)
+                │
+                ├── WhoisModule
+                │     ├── validate(backpack)  →  has a target?  Yes → proceed
+                │     └── run(backpack)       →  writes whois data
+                │
+                ├── DnsModule
+                │     ├── validate(backpack)  →  has a target?  Yes → proceed
+                │     └── run(backpack)       →  writes dns records
+                │
+                └── PortScanModule
+                      ├── validate(backpack)  →  has a target?  Yes → proceed
+                      └── run(backpack)       →  writes open ports
+                │
+                ▼
+          backpack is now full:
+          { target, whois: {...}, dns: {...}, open_ports: [...] }
+                │
+                ▼
+          Report generator reads backpack → formatted output →
+          ============================================================
+            RECON REPORT: example.com
+          ============================================================
+            [ WHOIS ]      registrar, dates, name servers...
+            [ DNS ]        A records, MX, NS...
+            [ OPEN PORTS ] 22/tcp, 80/tcp, 443/tcp
 ```
 
 ### Architecture Decisions
