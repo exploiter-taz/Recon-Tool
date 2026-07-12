@@ -1,3 +1,10 @@
+python-whois
+dnspython
 requests
 python-Wappalyzer
+
+# python-Wappalyzer (above) imports pkg_resources internally. setuptools
+# 82.0.0 (Feb 2026) removed pkg_resources entirely, which breaks the
+# Wappalyzer import with: ModuleNotFoundError: No module named 'pkg_resources'
+# Pin below that version until python-Wappalyzer is updated or replaced.
 setuptools==70.0.0
