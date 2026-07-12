@@ -1,33 +1,9 @@
-"""Technology fingerprinting module.
-
-Built and tested for Kali Linux, where WhatWeb ships by default.
-
-Detects web server, CMS, frameworks, libraries, analytics, and CDN
-technologies for a target using three layers, in order of preference:
-
-1. WhatWeb (Ruby tool, invoked via subprocess) -- the primary detection
-   source on Kali. If somehow missing (e.g. a minimal install), logs a
-   clear warning with the fix (``sudo apt install whatweb``) and the
-   module continues using the remaining layers.
-2. python-Wappalyzer (local, offline, no API key required).
-3. A lightweight pure-Python fallback that inspects HTTP response
-   headers and page content directly via ``requests`` -- a safety net
-   so the module still produces useful output even in the edge case
-   where WhatWeb is unavailable.
-
-Depends on ``context.open_ports`` / ``context.banners`` if the active
-recon modules (portscan, banner) have already populated them -- used
-only to decide which scheme (http/https) and port to target. Falls back
-to scanning the raw target on port 443/80 if that data isn't present.
-"""
-
 import json
 import logging
-import os
 import re
 import shutil
 import subprocess
-import tempfile
+import warnings
 from typing import Any
 
 import requests
@@ -40,6 +16,8 @@ logger = logging.getLogger(__name__)
 _TIMEOUT_SECONDS = 10
 _WHATWEB_TIMEOUT_SECONDS = 30
 
+# Minimal signatures for the pure-Python fallback layer. Each entry maps a
+# technology name to (header_name, regex) or (None, regex_against_body).
 _SERVER_HEADER = "Server"
 _POWERED_BY_HEADER = "X-Powered-By"
 
@@ -51,7 +29,19 @@ _CMS_BODY_SIGNATURES: dict[str, str] = {
     "Magento": r"Mage\.Cookies|/skin/frontend/",
 }
 
-_CDN_HEADER_SIGNATURES: dict[str, str] = {
+# WhatWeb plugin names don't always match the keys above 1:1 (e.g. WhatWeb
+# may report "WordPress", "PossibleWordPress", or version-suffixed variants).
+# This maps WhatWeb plugin name patterns -> our canonical CMS name so we
+# don't silently under-report CMS hits from WhatWeb's JSON output.
+_WHATWEB_CMS_ALIASES: dict[str, str] = {
+    "wordpress": "WordPress",
+    "joomla": "Joomla",
+    "drupal": "Drupal",
+    "shopify": "Shopify",
+    "magento": "Magento",
+}
+
+_CDN_HEADER_VALUE_SIGNATURES: dict[str, str] = {
     "Cloudflare": r"cloudflare",
     "Akamai": r"akamai",
     "Fastly": r"fastly",
@@ -64,6 +54,14 @@ _ANALYTICS_BODY_SIGNATURES: dict[str, str] = {
     "Facebook Pixel": r"connect\.facebook\.net",
     "Hotjar": r"static\.hotjar\.com",
 }
+
+# Some entries in python-Wappalyzer's bundled (and no longer updated)
+# fingerprint file have malformed data -- e.g. a technology name with a
+# trailing "<https://vendor.com>" URL fragment baked in, left over from a
+# broken capture group in that entry's regex. Strip anything that looks
+# like a trailing angle-bracket annotation so the report stays clean
+# regardless of which upstream fingerprint entry produced it.
+_TRAILING_URL_ANNOTATION = re.compile(r"\s*<[^>]+>\s*$")
 
 
 class TechDetectModule(BaseReconModule):
@@ -149,6 +147,15 @@ class TechDetectModule(BaseReconModule):
         # No port info available yet -- assume https, the common case.
         return f"https://{target}"
 
+    @staticmethod
+    def _clean_tech_name(name: str) -> str:
+        """Strip junk that stale/broken fingerprint entries sometimes leave
+        in a technology name, e.g. "WordPress VIP <https://wpvip.com>" ->
+        "WordPress VIP". Safe to run on already-clean names -- it's a no-op
+        if there's nothing to strip.
+        """
+        return _TRAILING_URL_ANNOTATION.sub("", name).strip()
+
     def _run_whatweb(self, target: str) -> dict[str, Any] | None:
         """Run WhatWeb via subprocess, if it's installed on the host."""
         if shutil.which("whatweb") is None:
@@ -159,47 +166,55 @@ class TechDetectModule(BaseReconModule):
             )
             return None
 
-        tmp_path = None
         try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".json", delete=False
-            ) as tmp_file:
-                tmp_path = tmp_file.name
-
-            subprocess.run(
-                [
-                    "whatweb",
-                    f"--log-json={tmp_path}",
-                    "--quiet",
-                    "--no-errors",
-                    target,
-                ],
+            proc = subprocess.run(
+                ["whatweb", "--log-json=-", "--no-errors", target],
                 capture_output=True,
                 text=True,
                 timeout=_WHATWEB_TIMEOUT_SECONDS,
                 check=True,
             )
-            with open(tmp_path, "r") as result_file:
-                content = result_file.read()
-            raw = json.loads(content) if content.strip() else []
+            raw = json.loads(proc.stdout) if proc.stdout.strip() else []
         except subprocess.TimeoutExpired:
             logger.warning("WhatWeb timed out for %s", target)
             return None
-        except (subprocess.SubprocessError, json.JSONDecodeError, OSError):
-            logger.warning("WhatWeb failed or returned invalid data for %s", target)
+        except subprocess.CalledProcessError as exc:
+            # WhatWeb ran but exited non-zero -- surface its exit code and
+            # any stderr it produced instead of a generic "failed" message.
+            stderr = (exc.stderr or "").strip()
+            logger.warning(
+                "WhatWeb exited with code %s for %s%s",
+                exc.returncode,
+                target,
+                f": {stderr}" if stderr else "",
+            )
             return None
-        finally:
-            if tmp_path and os.path.exists(tmp_path):
-                os.unlink(tmp_path)
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "WhatWeb returned invalid JSON for %s (%s)", target, exc
+            )
+            return None
+        except subprocess.SubprocessError as exc:
+            logger.warning(
+                "WhatWeb subprocess error for %s (%s: %s)",
+                target,
+                type(exc).__name__,
+                exc,
+            )
+            return None
 
-        plugins = raw[-1].get("plugins", {}) if raw else {}
-        detected_cms = [
-            name for name in _CMS_BODY_SIGNATURES if name.replace(" ", "") in plugins
-        ]
+        # Defensive: `raw` may be a non-empty list whose first element isn't
+        # a dict (unexpected WhatWeb output shape). Don't let that crash the
+        # whole module -- degrade gracefully like every other layer here.
+        if raw and isinstance(raw[0], dict):
+            plugins = raw[0].get("plugins", {})
+        else:
+            plugins = {}
+
         return {
             "source": "whatweb",
             "server": self._first_string(plugins.get("HTTPServer")),
-            "cms": detected_cms,
+            "cms": self._match_whatweb_cms(plugins),
             "frameworks": [],
             "libraries": [],
             "analytics": [],
@@ -207,24 +222,65 @@ class TechDetectModule(BaseReconModule):
             "raw": raw,
         }
 
+    def _match_whatweb_cms(self, plugins: dict[str, Any]) -> list[str]:
+        """Map WhatWeb's own plugin names onto our canonical CMS names.
+
+        WhatWeb plugin keys don't reliably match `_CMS_BODY_SIGNATURES`
+        exactly (casing, suffixes like "-Version", etc.), so we do a
+        case-insensitive substring match against known aliases instead of
+        a strict `in` check against a different dict's keys.
+        """
+        detected: list[str] = []
+        for plugin_key in plugins:
+            key_lower = plugin_key.lower()
+            for alias, canonical_name in _WHATWEB_CMS_ALIASES.items():
+                if alias in key_lower and canonical_name not in detected:
+                    detected.append(canonical_name)
+        return detected
+
     def _run_wappalyzer(self, base_url: str) -> dict[str, Any] | None:
         """Run local, offline Wappalyzer detection -- no API key required."""
         try:
-            from Wappalyzer import Wappalyzer, WebPage
-        except ImportError:
-            logger.info("python-Wappalyzer not installed, skipping")
+            from Wappalyzer import Wappalyzer, WebPage  # type: ignore[import-not-found]
+        except ImportError as exc:
+            # Don't assume it's simply "not installed" -- a stale dependency
+            # (e.g. pkg_resources removed by setuptools>=82) raises
+            # ModuleNotFoundError too, and looks identical to a missing
+            # package unless we log the real exception. See project notes:
+            # pin `setuptools<82` in requirements.txt if this fires.
+            logger.info(
+                "Wappalyzer unavailable, skipping (%s: %s)",
+                type(exc).__name__,
+                exc,
+            )
             return None
 
         try:
-            wappalyzer = Wappalyzer.latest()
-            webpage = WebPage.new_from_url(base_url, timeout=_TIMEOUT_SECONDS)
-            detected = wappalyzer.analyze_with_categories(webpage)
-        except Exception:
-            logger.warning("Wappalyzer detection failed for %s", base_url)
+            # python-Wappalyzer's bundled fingerprint file is an old,
+            # frozen snapshot with a few malformed regex entries. Those
+            # raise harmless UserWarnings on every run -- suppress just
+            # this call so demo/CLI output stays readable, without hiding
+            # real errors (warnings are not exceptions; those still raise).
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                wappalyzer = Wappalyzer.latest()
+                webpage = WebPage.new_from_url(base_url, timeout=_TIMEOUT_SECONDS)
+                detected = wappalyzer.analyze_with_categories(webpage)
+        except Exception as exc:
+            # Broad except is intentional here (this layer must never take
+            # down the whole scan), but log the exception type/message so a
+            # real bug doesn't hide behind a generic warning forever.
+            logger.warning(
+                "Wappalyzer detection failed for %s (%s: %s)",
+                base_url,
+                type(exc).__name__,
+                exc,
+            )
             return None
 
         cms, frameworks, libraries, analytics, cdn = [], [], [], [], []
-        for tech_name, info in detected.items():
+        for raw_tech_name, info in detected.items():
+            tech_name = self._clean_tech_name(raw_tech_name)
             categories = [c.lower() for c in info.get("categories", [])]
             if "cms" in categories:
                 cms.append(tech_name)
@@ -269,11 +325,16 @@ class TechDetectModule(BaseReconModule):
             for name, pattern in _CMS_BODY_SIGNATURES.items()
             if re.search(pattern, body, re.IGNORECASE)
         ]
+
+        # Only search actual header VALUES, not header names, so a header
+        # literally named e.g. "X-Fastly-Debug" on a non-Fastly site can't
+        # produce a false positive by matching its own name.
         cdn = [
             name
-            for name, pattern in _CDN_HEADER_SIGNATURES.items()
-            if re.search(pattern, str(headers), re.IGNORECASE)
+            for name, pattern in _CDN_HEADER_VALUE_SIGNATURES.items()
+            if any(re.search(pattern, value, re.IGNORECASE) for value in headers.values())
         ]
+
         analytics = [
             name
             for name, pattern in _ANALYTICS_BODY_SIGNATURES.items()
@@ -293,11 +354,15 @@ class TechDetectModule(BaseReconModule):
 
     @staticmethod
     def _first_string(value: Any) -> str | None:
-        """WhatWeb plugin values look like {"string": ["nginx"], ...}."""
-        if isinstance(value, dict):
-            strings = value.get("string")
-            if isinstance(strings, list) and strings:
-                return str(strings[0])
+        """WhatWeb plugin values are often lists -- grab the first string."""
+        if isinstance(value, list) and value:
+            first = value[0]
+            if isinstance(first, dict):
+                strings = first.get("string")
+                if isinstance(strings, list) and strings:
+                    return str(strings[0])
+                return None
+            return str(first)
         if isinstance(value, str):
             return value
         return None
